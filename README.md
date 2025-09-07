@@ -36,5 +36,5 @@ python3 scripts/install.py
 ## Using
 
 ```bash
-python3 scripts/summarize.py <path-to-audiofile>
+python3 summarize.py <path-to-audiofile>
 ```
