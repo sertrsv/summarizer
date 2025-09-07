@@ -241,7 +241,49 @@ import time
 import os
 import sys
 from pathlib import Path
+from datetime import timedelta
+import threading
+import itertools
 
+class Spinner:
+    """Класс для отображения индикатора загрузки"""
+    def __init__(self, message="Загрузка..."):
+        self.spinner = itertools.cycle(['-', '/', '|', '\\\\'])
+        self.message = message
+        self.running = False
+        self.thread = None
+
+    def spin(self):
+        while self.running:
+            sys.stdout.write(next(self.spinner) + ' ' + self.message + '\\r')
+            sys.stdout.flush()
+            time.sleep(0.1)
+            sys.stdout.write('\\r' + ' ' * (len(self.message) + 2) + '\\r')
+            sys.stdout.flush()
+
+    def __enter__(self):
+        self.running = True
+        self.thread = threading.Thread(target=self.spin)
+        self.thread.start()
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.running = False
+        self.thread.join()
+        sys.stdout.write('\\r' + ' ' * (len(self.message) + 2) + '\\r')
+        sys.stdout.flush()
+
+def log_step_time(func):
+    """Декоратор для логирования времени выполнения функций"""
+    def wrapper(*args, **kwargs):
+        start_time = time.time()
+        result = func(*args, **kwargs)
+        end_time = time.time()
+        elapsed = end_time - start_time
+        print(f"⏱️ Время выполнения '{func.__name__}': {timedelta(seconds=int(elapsed))}")
+        return result
+    return wrapper
+
+@log_step_time
 def check_ollama_server():
     """Проверяет, запущен ли сервер Ollama"""
     try:
@@ -250,25 +292,24 @@ def check_ollama_server():
     except requests.exceptions.ConnectionError:
         return False
 
+@log_step_time
 def start_ollama_server():
     """Запускает сервер Ollama в фоновом режиме"""
     try:
-        # Пытаемся запустить сервер Ollama
-        process = subprocess.Popen(
-            ["ollama", "serve"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True
-        )
-        print("🔄 Запускаем сервер Ollama...")
-        time.sleep(5)  # Даем серверу время на запуск
-        
-        # Проверяем, запустился ли сервер
-        for _ in range(10):
-            if check_ollama_server():
-                print("✅ Сервер Ollama успешно запущен")
-                return process
-            time.sleep(2)
+        with Spinner("🔄 Запускаем сервер Ollama..."):
+            process = subprocess.Popen(
+                ["ollama", "serve"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True
+            )
+            time.sleep(5)
+            
+            for _ in range(10):
+                if check_ollama_server():
+                    print("✅ Сервер Ollama успешно запущен")
+                    return process
+                time.sleep(2)
         
         print("❌ Не удалось запустить сервер Ollama")
         return None
@@ -276,101 +317,100 @@ def start_ollama_server():
         print(f"❌ Ошибка при запуске сервера Ollama: {e}")
         return None
 
+@log_step_time
 def ensure_gemma_model():
     """Убеждается, что модель Gemma 3 27B доступна"""
     try:
-        # Проверяем, есть ли уже модель
-        response = requests.get("http://localhost:11434/api/tags")
-        models = response.json().get("models", [])
-        
-        gemma_models = [m for m in models if "gemma3" in m.get("name", "").lower() and "27b" in m.get("name", "")]
-        
-        if not gemma_models:
-            print("📥 Модель Gemma 3 27B не найдена, начинаем загрузку...")
-            subprocess.run(["ollama", "pull", "gemma3:27b"], check=True)
-            print("✅ Модель Gemma 3 27B успешно загружена")
-        else:
-            print("✅ Модель Gemma 3 27B уже доступна")
+        with Spinner("🔍 Проверяем наличие модели Gemma 3 27B..."):
+            response = requests.get("http://localhost:11434/api/tags")
+            models = response.json().get("models", [])
             
+            gemma_models = [m for m in models if "gemma3" in m.get("name", "").lower() and "27b" in m.get("name", "")]
+            
+            if not gemma_models:
+                print("📥 Модель Gemma 3 27B не найдена, начинаем загрузку...")
+                subprocess.run(["ollama", "pull", "gemma3:27b"], check=True)
+                print("✅ Модель Gemma 3 27B успешно загружена")
+            else:
+                print("✅ Модель Gemma 3 27B уже доступна")
+                
         return True
     except Exception as e:
         print(f"❌ Ошибка при проверке/загрузке модели: {e}")
         return False
 
+@log_step_time
 def transcribe_audio(audio_path):
     """Транскрибирует аудио с помощью Whisper large-v3"""
     try:
-        print("🎙️ Начинаем транскрибацию аудио с помощью Whisper large-v3...")
-        
-        # Используем Whisper для транскрибации
-        result = subprocess.run([
-            "whisper", audio_path, 
-            "--model", "large-v3",
-            "--language", "ru",
-            "--output_format", "txt"
-        ], capture_output=True, text=True, check=True)
-        
-        # Читаем результат из файла
-        base_name = Path(audio_path).stem
-        txt_path = f"{base_name}.txt"
-        with open(txt_path, 'r', encoding='utf-8') as f:
-            transcript = f.read()
+        with Spinner("🎙️ Транскрибируем аудио с помощью Whisper large-v3..."):
+            # Используем Whisper для транскрибации
+            result = subprocess.run([
+                "whisper", audio_path, 
+                "--model", "large-v3",
+                "--language", "ru",
+                "--output_format", "txt"
+            ], capture_output=True, text=True, check=True)
+            
+            # Читаем результат из файла
+            base_name = Path(audio_path).stem
+            txt_path = f"{base_name}.txt"
+            with open(txt_path, 'r', encoding='utf-8') as f:
+                transcript = f.read()
         
         print("✅ Транскрибация завершена")
         return transcript, txt_path
-    except subprocess.CalledProcessError as e:
-        print(f"❌ Ошибка транскрибации: {e.stderr}")
-        return None, None
     except Exception as e:
         print(f"❌ Неожиданная ошибка при транскрибации: {e}")
         return None, None
 
+@log_step_time
 def summarize_text(text):
     """Создает краткое содержание текста с помощью Ollama и Gemma 3 27B"""
     try:
-        print("🧠 Начинаем саммаризацию текста...")
-        
-        prompt = f"""
-        Создай подробное краткое содержание следующего текста встречи в формате Markdown.
-        Включи следующие разделы:
-        - Основные темы обсуждения
-        - Ключевые решения
-        - Действия и ответственные
-        - Следующие шаги
-        - Общая тональность встречи
-        
-        Текст встречи:
-        {text[:12000]}  # Ограничиваем длину контекста для большинства моделей
-        """
-        
-        response = requests.post(
-            "http://localhost:11434/api/generate",
-            json={
-                "model": "gemma3:27b",
-                "prompt": prompt,
-                "stream": False,
-                "options": {
-                    "temperature": 0.3,
-                    "top_p": 0.9,
-                    "num_ctx": 8192  # Размер контекста
-                }
-            },
-            timeout=300  # Увеличиваем таймаут для больших текстов
-        )
-        
-        if response.status_code == 200:
-            result = response.json()
-            summary = result.get("response", "")
-            print("✅ Саммаризация завершена")
-            return summary
-        else:
-            print(f"❌ Ошибка саммаризации: {response.text}")
-            return None
+        with Spinner("🧠 Создаем краткое содержание с помощью Gemma 3 27B..."):
+            prompt = f"""
+            Создай подробное краткое содержание следующего текста встречи в формате Markdown.
+            Включи следующие разделы:
+            - Основные темы обсуждения
+            - Ключевые решения
+            - Действия и ответственные
+            - Следующие шаги
+            - Общая тональность встречи
             
+            Текст встречи:
+            {text[:12000]}
+            """
+            
+            response = requests.post(
+                "http://localhost:11434/api/generate",
+                json={
+                    "model": "gemma3:27b",
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.3,
+                        "top_p": 0.9,
+                        "num_ctx": 8192  # Размер контекста
+                    }
+                },
+                timeout=60*60*3  # Увеличиваем таймаут для больших текстов
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                summary = result.get("response", "")
+                print("✅ Саммаризация завершена")
+                return summary
+            else:
+                print(f"❌ Ошибка саммаризации: {response.text}")
+                return None
+
     except Exception as e:
         print(f"❌ Неожиданная ошибка при саммаризации: {e}")
         return None
 
+@log_step_time
 def save_markdown(summary, output_path):
     """Сохраняет результат в Markdown файл"""
     try:
@@ -383,7 +423,9 @@ def save_markdown(summary, output_path):
         return False
 
 def main():
-    # Проверяем наличие аудиофайла
+    script_start_time = time.time()
+    print("🚀 Начало процесса обработки аудио\\n")
+
     if len(sys.argv) < 2:
         print("❌ Укажите путь к аудиофайлу в качестве аргумента.")
         print("   Пример: python summarize.py audio.m4a")
@@ -394,7 +436,7 @@ def main():
         print(f"❌ Аудиофайл {audio_path} не найден")
         sys.exit(1)
     
-    # Проверяем и запускаем сервер Ollama при необходимости
+    # Проверяем и запускаем сервер Ollama
     ollama_process = None
     if not check_ollama_server():
         ollama_process = start_ollama_server()
@@ -435,14 +477,17 @@ def main():
     
     # Останавливаем сервер Ollama, если мы его запускали
     if ollama_process:
-        print("🛑 Останавливаем сервер Ollama...")
-        ollama_process.terminate()
-        try:
-            ollama_process.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            ollama_process.kill()
+        with Spinner("🛑 Останавливаем сервер Ollama..."):
+            ollama_process.terminate()
+            try:
+                ollama_process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                ollama_process.kill()
     
     print(f"📝 Полный транскрипт сохранен в {transcript_path}")
+
+    total_time = time.time() - script_start_time
+    print(f"\\n🕐 ОБЩЕЕ ВРЕМЯ ВЫПОЛНЕНИЯ: {timedelta(seconds=int(total_time))}")
 
 if __name__ == "__main__":
     main()
